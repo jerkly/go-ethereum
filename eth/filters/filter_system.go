@@ -99,6 +99,7 @@ type EventSystem struct {
 	logsSub       event.Subscription         // Subscription for new log event
 	rmLogsSub     event.Subscription         // Subscription for removed log event
 	chainSub      event.Subscription         // Subscription for new chain event
+	chainSideEvSub      event.Subscription         // Subscription for new chain event
 	pendingLogSub *event.TypeMuxSubscription // Subscription for pending log event
 
 	// Channels
@@ -108,6 +109,7 @@ type EventSystem struct {
 	logsCh    chan []*types.Log          // Channel to receive new log event
 	rmLogsCh  chan core.RemovedLogsEvent // Channel to receive removed log event
 	chainCh   chan core.ChainEvent       // Channel to receive new chain event
+	chainSideEvCh  chan core.ChainSideEvent
 }
 
 // NewEventSystem creates a new manager that listens for event on the given mux,
@@ -127,6 +129,7 @@ func NewEventSystem(mux *event.TypeMux, backend Backend, lightMode bool) *EventS
 		logsCh:    make(chan []*types.Log, logsChanSize),
 		rmLogsCh:  make(chan core.RemovedLogsEvent, rmLogsChanSize),
 		chainCh:   make(chan core.ChainEvent, chainEvChanSize),
+		chainSideEvCh:  make(chan core.ChainSideEvent, chainEvChanSize),
 	}
 
 	// Subscribe events
@@ -134,6 +137,7 @@ func NewEventSystem(mux *event.TypeMux, backend Backend, lightMode bool) *EventS
 	m.logsSub = m.backend.SubscribeLogsEvent(m.logsCh)
 	m.rmLogsSub = m.backend.SubscribeRemovedLogsEvent(m.rmLogsCh)
 	m.chainSub = m.backend.SubscribeChainEvent(m.chainCh)
+	m.chainSideEvSub = m.backend.SubscribeChainSideEvent(m.chainSideEvCh)
 	// TODO(rjl493456442): use feed to subscribe pending log event
 	m.pendingLogSub = m.mux.Subscribe(core.PendingLogsEvent{})
 
@@ -369,6 +373,10 @@ func (es *EventSystem) broadcast(filters filterIndex, ev interface{}) {
 				}
 			})
 		}
+	case core.ChainSideEvent:
+		for _, f := range filters[BlocksSubscription] {
+			f.headers <- e.Block.Header()
+		}
 	}
 }
 
@@ -454,6 +462,7 @@ func (es *EventSystem) eventLoop() {
 		es.logsSub.Unsubscribe()
 		es.rmLogsSub.Unsubscribe()
 		es.chainSub.Unsubscribe()
+		es.chainSideEvSub.Unsubscribe()
 	}()
 
 	index := make(filterIndex)
@@ -471,6 +480,8 @@ func (es *EventSystem) eventLoop() {
 		case ev := <-es.rmLogsCh:
 			es.broadcast(index, ev)
 		case ev := <-es.chainCh:
+			es.broadcast(index, ev)
+		case ev := <-es.chainSideEvCh:
 			es.broadcast(index, ev)
 		case ev, active := <-es.pendingLogSub.Chan():
 			if !active { // system stopped
